@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Conferência de Expedição</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    input[type="text"] { width: 300px; padding: 5px; }
+    table { border-collapse: collapse; margin-top: 10px; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+    th { background-color: #f2f2f2; }
+    .ok { background-color: #d4edda; }
+    .parcial { background-color: #fff3cd; }
+    .excesso { background-color: #f8d7da; }
+  </style>
+</head>
+<body>
+
+  <h2>📦 Conferência de Produtos</h2>
+
+  <div id="cabecalho" style="margin-bottom: 20px;"></div>
+
+  <h3>1. Importar Nota Fiscal</h3>
+  <label>Nota Fiscal (.xlsx):</label>
+  <input type="file" id="notaFile" accept=".xlsx" /><br><br>
+
+  <button onclick="carregarNota()">📥 Carregar Nota</button>
+
+  <h3>2. Leitura de Código de Barras</h3>
+  <input type="text" id="codigo" placeholder="Digite ou escaneie o EAN13 ou EAN14" />
+  <button onclick="lerCodigo()">Ler</button>
+
+  <h3>📊 Resultado</h3>
+  <div id="resultado"></div>
+
+  <h3>📋 Resumo da Conferência</h3>
+  <table id="resumoTable">
+    <thead>
+      <tr>
+        <th>Referência</th>
+        <th>Código</th>
+        <th>Esperado</th>
+        <th>Conferido</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    let produtos = {}; // Cadastro fixo
+    let nota = {};     // Quantidades esperadas
+    let cabecalho = {};
+
+    function carregarCadastroRemoto() {
+      const url = "https://liderbrinquedos-my.sharepoint.com/personal/francisco_holanda_liderbrinquedos_onmicrosoft_com/_layouts/15/download.aspx?share=EaakLK_XXphNrsiw_9x7muUBn6aw3LUmryKSfZPTaHS3eg";
+
+      fetch(url)
+        .then(res => res.arrayBuffer())
+        .then(data => {
+          const workbook = XLSX.read(data, { type: 'array' });
+          const sheet = workbook.Sheets[workbook.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(sheet);
+
+          rows.forEach(row => {
+            produtos[row["EAN14 Caixa"]] = {
+              codigo: row["Código Produto"],
+              referencia: row["Referência"],
+              multiplo: row["Múltiplo Venda"],
+              ean13: row["EAN13 Produto"],
+              ean14: row["EAN14 Caixa"],
+              conferido: 0
+            };
+            produtos[row["EAN13 Produto"]] = produtos[row["EAN14 Caixa"]];
+          });
+
+          console.log("✅ Cadastro carregado do OneDrive");
+        })
+        .catch(err => {
+          console.error("Erro ao carregar cadastro remoto:", err);
+          alert("❌ Falha ao carregar o cadastro de produtos.");
+        });
+    }
+
+    function carregarNota() {
+      const notaInput = document.getElementById('notaFile').files[0];
+      if (!notaInput) {
+        alert("Por favor, selecione o arquivo da nota fiscal.");
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const workbook = XLSX.read(e.target.result, { type: 'binary' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(sheet);
+
+        data.forEach(row => {
+          const ean14 = row["EAN14 Caixa"];
+          const ean13 = row["EAN13 Produto"];
+          const qtd = row["Quantidade"];
+
+          nota[ean14] = qtd;
+          nota[ean13] = qtd;
+
+          cabecalho = {
+            nota: row["Nota"],
+            emitente: row["Emitente"],
+            destinatario: row["Destinatário"],
+            cnpj: row["CNPJ Destinatário"]
+          };
+        });
+
+        document.getElementById("cabecalho").innerHTML = `
+          <p><strong>Nota:</strong> ${cabecalho.nota} |
+          <strong>Emitente:</strong> ${cabecalho.emitente} |
+          <strong>Destinatário:</strong> ${cabecalho.destinatario} (${cabecalho.cnpj})</p>
+        `;
+        document.getElementById("resultado").innerHTML = "<p>✅ Nota carregada com sucesso!</p>";
+        atualizarResumo();
+      };
+      reader.readAsBinaryString(notaInput);
+    }
+
+    function lerCodigo() {
+      const codigo = document.getElementById("codigo").value.trim();
+      const produto = produtos[codigo];
+      const esperado = nota[codigo];
+
+      if (!produto || esperado === undefined) {
+        document.getElementById("resultado").innerHTML += `<p>❌ Código ${codigo} não encontrado</p>`;
+        return;
+      }
+
+      const incremento = codigo.length === 13 ? 1 : produto.multiplo;
+      produto.conferido += incremento;
+
+      let status = "✅ OK";
+      if (produto.conferido < esperado) status = "⚠️ Parcial";
+      if (produto.conferido > esperado) status = "❌ Excesso";
+
+      document.getElementById("resultado").innerHTML += `
+        <p>Produto ${produto.referencia} (${produto.codigo}): ${produto.conferido}/${esperado} → ${status}</p>
+      `;
+
+      document.getElementById("codigo").value = "";
+      atualizarResumo();
+    }
+
+    function atualizarResumo() {
+      const tbody = document.querySelector("#resumoTable tbody");
+      tbody.innerHTML = "";
+
+      const usados = new Set();
+
+      for (const codigo in produtos) {
+        const p = produtos[codigo];
+        if (usados.has(p.codigo)) continue;
+        usados.add(p.codigo);
+
+        const esperado = nota[p.ean13] || nota[p.ean14] || 0;
+        const conferido = p.conferido || 0;
+
+        let status = "✅ OK";
+        let classe = "ok";
+        if (conferido < esperado) { status = "⚠️ Parcial"; classe = "parcial"; }
+        if (conferido > esperado) { status = "❌ Excesso"; classe = "excesso"; }
+
+        const row = `
+          <tr class="${classe}">
+            <td>${p.referencia}</td>
+            <td>${p.codigo}</td>
+            <td>${esperado}</td>
+            <td>${conferido}</td>
+            <td>${status}</td>
+          </tr>
+        `;
+        tbody.innerHTML += row;
+      }
+    }
+
+    window.onload = () => {
+      carregarCadastroRemoto();
+    };
+  </script>
+</body>
+</html>
